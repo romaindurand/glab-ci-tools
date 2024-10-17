@@ -11,32 +11,50 @@ async function main() {
     const refMaxLength = pipelines.reduce((max, pipeline) => {
       return Math.max(max, pipeline.ref.length);
     }, 0);
-    const pipelineOptions = pipelines.map((pipeline) => {
-      return {
-        name: colors.black(formatPipeline(pipeline, refMaxLength)),
-        value: pipeline.sha,
-      };
-    });
-    const pipelineSha = await select({
-      message: "Select a pipeline",
-      choices: pipelineOptions,
-      theme: {
-        style: {
-          highlight(text) {
-            return colors.bgWhite(text);
-          },
-        },
-      },
-      loop: false,
-      pageSize: process.stdout.rows - 2,
-    });
+    const pipelineChoices = getPipelineChoices(pipelines, refMaxLength);
+    const pipelineSha = selectPipeline(pipelineChoices);
 
     selectPipelineAction(pipelineSha);
   } catch (error) {
     console.error(error);
   }
 }
+
 main();
+
+/**
+ * @param {PipelineChoice[]} pipelineChoices
+ * @returns {Promise<string>}
+ */
+async function selectPipeline(pipelineChoices) {
+  return select({
+    message: "Select a pipeline",
+    choices: pipelineChoices,
+    theme: {
+      style: {
+        highlight(text) {
+          return colors.bgWhite(text);
+        },
+      },
+    },
+    loop: false,
+    pageSize: process.stdout.rows - 2,
+  });
+}
+
+/**
+ * @param {Pipeline[]} pipelines
+ * @param {number} refMaxLength
+ * @returns {{name: string, value: string}[]}
+ */
+function getPipelineChoices(pipelines, refMaxLength) {
+  return pipelines.map((pipeline) => {
+    return {
+      name: colors.black(formatPipeline(pipeline, refMaxLength)),
+      value: pipeline.sha,
+    };
+  });
+}
 
 /**
  *
@@ -52,38 +70,43 @@ async function selectPipelineAction(pipelineSha) {
   });
 
   if (action === "view") {
-    const glabCiView = spawn("glab", ["ci", "view", "-b", pipelineSha], {
-      stdio: "inherit",
-    });
-    glabCiView.on("exit", () => {
-      return selectPipelineAction(pipelineSha);
-    });
+    execViewPipeline(pipelineSha);
   } else if (action === "trigger") {
     const pipelineDetails = await execGlabCiGet(pipelineSha);
-    const jobs = pipelineDetails.jobs.map((job) => {
-      const statusColor = {
-        running: colors.yellow,
-        success: colors.green,
-        failed: colors.red,
-        canceled: colors.gray,
-        manual: colors.blue,
-      }[job.status];
-      return {
-        name: `${colors.bold(job.name)}${" ".repeat(
-          20 - job.name.length
-        )}(${statusColor(job.status)})`,
-        value: job.id,
-      };
-    });
+    const jobChoices = getJobChoices(pipelineDetails.jobs);
 
     const jobId = await select({
       message: "Select a job",
-      choices: jobs,
+      choices: jobChoices,
     });
 
     const glabCiTrigger = await execGlabCiTrigger(jobId);
     console.log(glabCiTrigger);
   }
+}
+
+/**
+ * @param {Job[]} jobs
+ * @returns {{name: string, value: number}[]}
+ */
+function getJobChoices(jobs) {
+  const jobChoices = jobs.map((job) => {
+    const statusColor = {
+      running: colors.yellow,
+      success: colors.green,
+      failed: colors.red,
+      canceled: colors.gray,
+      manual: colors.blue,
+    }[job.status];
+    return {
+      name: `${colors.bold(job.name)}${" ".repeat(
+        20 - job.name.length
+      )}(${statusColor(job.status)})`,
+      value: job.id,
+    };
+  });
+
+  return jobChoices;
 }
 
 /**
@@ -124,7 +147,6 @@ async function execGlabCiList() {
  * @returns {Promise<PipelineDetails>}
  */
 async function execGlabCiGet(pipelineId) {
-  // glab ci get -p 818162 -F json
   return new Promise((resolve, reject) => {
     exec(`glab ci get -b ${pipelineId} -F json`, (error, stdout) => {
       if (error) {
@@ -159,6 +181,18 @@ async function execGlabCiTrigger(jobId) {
 }
 
 /**
+ * @param {string} pipelineSha
+ */
+function execViewPipeline(pipelineSha) {
+  const glabCiView = spawn("glab", ["ci", "view", "-b", pipelineSha], {
+    stdio: "inherit",
+  });
+  glabCiView.on("exit", () => {
+    return selectPipelineAction(pipelineSha);
+  });
+}
+
+/**
  * @typedef {object} Job
  * @property {string} name - The name of the job.
  * @property {string} status - The stage of the job.
@@ -181,4 +215,10 @@ async function execGlabCiTrigger(jobId) {
  * @property {string} web_url - The web URL of the pipeline.
  * @property {string} updated_at - The last update timestamp of the pipeline.
  * @property {string} created_at - The creation timestamp of the pipeline.
+ */
+
+/**
+ * @typedef {object} PipelineChoice
+ * @property {string} name - The string displayed in the prompt.
+ * @property {string} value - The sha of the pipeline.
  */
