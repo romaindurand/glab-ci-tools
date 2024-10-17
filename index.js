@@ -7,16 +7,30 @@ import { formatDistance } from "date-fns";
 
 async function main() {
   try {
-    const pipelines = await execGlabCiList();
-    const refMaxLength = pipelines.reduce((max, pipeline) => {
-      return Math.max(max, pipeline.ref.length);
-    }, 0);
-    const pipelineChoices = getPipelineChoices(pipelines, refMaxLength);
-    const pipelineSha = selectPipeline(pipelineChoices);
+    while (true) {
+      const pipelines = await execGlabCiList();
+      const refMaxLength = pipelines.reduce((max, pipeline) => {
+        return Math.max(max, pipeline.ref.length);
+      }, 0);
+      const pipelineChoices = getPipelineChoices(pipelines, refMaxLength);
+      const pipelineSha = await selectPipeline(pipelineChoices);
 
-    selectPipelineAction(pipelineSha);
+      while (true) {
+        const action = await selectPipelineAction(pipelineSha);
+        if (action === "selectAction") {
+          continue;
+        } else if (action === "back") {
+          break;
+        } else if (action === "quit") {
+          process.exit();
+        }
+      }
+    }
   } catch (error) {
-    console.error(error);
+    if (process.argv.includes("--debug")) {
+      console.log(colors.red("An error occurred :"));
+      console.error(error);
+    }
   }
 }
 
@@ -33,7 +47,7 @@ async function selectPipeline(pipelineChoices) {
     theme: {
       style: {
         highlight(text) {
-          return colors.bgWhite(text);
+          return colors.bgWhite(colors.black(text));
         },
       },
     },
@@ -50,7 +64,7 @@ async function selectPipeline(pipelineChoices) {
 function getPipelineChoices(pipelines, refMaxLength) {
   return pipelines.map((pipeline) => {
     return {
-      name: colors.black(formatPipeline(pipeline, refMaxLength)),
+      name: formatPipeline(pipeline, refMaxLength),
       value: pipeline.sha,
     };
   });
@@ -66,11 +80,18 @@ async function selectPipelineAction(pipelineSha) {
     choices: [
       { name: "View pipeline", value: "view" },
       { name: "Trigger job", value: "trigger" },
+      { name: colors.dim("← Back"), value: "back" },
+      { name: colors.dim("✕ Quit"), value: "quit" },
     ],
   });
 
+  if (action === "back" || action === "quit") {
+    return action;
+  }
+
   if (action === "view") {
-    execViewPipeline(pipelineSha);
+    await execViewPipeline(pipelineSha);
+    return "selectAction";
   } else if (action === "trigger") {
     const pipelineDetails = await execGlabCiGet(pipelineSha);
     const jobChoices = getJobChoices(pipelineDetails.jobs);
@@ -82,6 +103,7 @@ async function selectPipelineAction(pipelineSha) {
 
     const glabCiTrigger = await execGlabCiTrigger(jobId);
     console.log(glabCiTrigger);
+    return "selectAction";
   }
 }
 
@@ -91,13 +113,14 @@ async function selectPipelineAction(pipelineSha) {
  */
 function getJobChoices(jobs) {
   const jobChoices = jobs.map((job) => {
-    const statusColor = {
-      running: colors.yellow,
-      success: colors.green,
-      failed: colors.red,
-      canceled: colors.gray,
-      manual: colors.blue,
-    }[job.status];
+    const statusColor =
+      {
+        running: colors.yellow,
+        success: colors.green,
+        failed: colors.red,
+        canceled: colors.gray,
+        manual: colors.blue,
+      }[job.status] || colors.white;
     return {
       name: `${colors.bold(job.name)}${" ".repeat(
         20 - job.name.length
@@ -117,9 +140,20 @@ function formatPipeline(pipeline, refMaxLength) {
   const time = formatDistance(new Date(pipeline.created_at), new Date(), {
     addSuffix: true,
   });
+  const statusColor =
+    {
+      running: colors.blue,
+      success: colors.green,
+      canceled: colors.gray,
+      failed: colors.red,
+    }[pipeline.status] || colors.white;
   return (
-    colors.green(`${pipeline.status} • #${pipeline.id}`) +
-    colors.black(` (#${pipeline.iid}) ${pipeline.ref}`) +
+    statusColor(
+      `${pipeline.status}${" ".repeat(9 - pipeline.status.length)} • #${
+        pipeline.id
+      }`
+    ) +
+    ` (#${pipeline.iid}) ${pipeline.ref}` +
     ` ${" ".repeat(refMaxLength - pipeline.ref.length)}` +
     ` (${colors.magenta(time)})`
   );
@@ -172,9 +206,8 @@ async function execGlabCiTrigger(jobId) {
       const spawnTrace = spawn("glab", ["ci", "trace", jobId], {
         stdio: "inherit",
       });
-      spawnTrace.on("exit", (code) => {
+      spawnTrace.on("exit", () => {
         resolve(stdout);
-        process.exit(code);
       });
     });
   });
@@ -184,11 +217,13 @@ async function execGlabCiTrigger(jobId) {
  * @param {string} pipelineSha
  */
 function execViewPipeline(pipelineSha) {
-  const glabCiView = spawn("glab", ["ci", "view", "-b", pipelineSha], {
-    stdio: "inherit",
-  });
-  glabCiView.on("exit", () => {
-    return selectPipelineAction(pipelineSha);
+  return new Promise((resolve) => {
+    const glabCiView = spawn("glab", ["ci", "view", "-b", pipelineSha], {
+      stdio: "inherit",
+    });
+    glabCiView.on("exit", () => {
+      resolve();
+    });
   });
 }
 
